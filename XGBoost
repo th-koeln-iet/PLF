@@ -1,0 +1,150 @@
+#Add librarys
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+import xgboost as xgb
+from sklearn.metrics import mean_squared_error
+color_pal = sns.color_palette()
+plt.style.use('fivethirtyeight') #https://matplotlib.org/stable/gallery/style_sheets/style_sheets_reference.html 
+
+#Lastdaten einlesen
+df =  pd.read_csv('energiedaten3.csv', sep=';', index_col="zeit", decimal=",")
+df.index = pd.to_datetime(df.index, format="%d.%m.%Y %H:%M")
+df.plot(style='.',
+        figsize=(15, 5),
+        color=color_pal[0],
+        title='Stromverbrauch in kWh')
+plt.show()
+
+#Define Train & Test
+train = df.loc[df.index < '01-01-2022']
+test = df.loc[df.index >= '01-01-2022']
+
+fig, ax = plt.subplots(figsize=(15, 5))
+train.plot(ax=ax, label='Training Set', title='Data Train/Test Split')
+test.plot(ax=ax, label='Test Set')
+ax.axvline('01-01-2022', color='black', ls='--')
+ax.legend(['Training Set', 'Test Set'])
+plt.show()
+
+# Example Week Mo - Fr
+df.loc[(df.index > '01-01-2018') & (df.index < '01-07-2018')] \
+    .plot(figsize=(15, 5), title='Week Of Data')                     
+plt.show()
+
+#Create copy Features Train & Test 
+def create_features(df):
+    """
+    Create time series features based on time series index.
+    """
+    df = df.copy()
+    df['hour'] = df.index.hour
+    df['dayofweek'] = df.index.dayofweek
+    df['quarter'] = df.index.quarter
+    df['month'] = df.index.month
+    df['year'] = df.index.year
+    df['dayofyear'] = df.index.dayofyear
+    df['dayofmonth'] = df.index.day
+    df['weekofyear'] = df.index.isocalendar().week
+    return df
+
+df = create_features(df)
+
+#Verteilung 24h
+ig, ax = plt.subplots(figsize=(15, 8))
+sns.boxplot(data=df, x='hour', y='stromverbrauch')
+ax.set_title('kWh by Hour')
+plt.show()
+
+#Monthly distribution
+fig, ax = plt.subplots(figsize=(10, 8))
+sns.boxplot(data=df, x='month', y='stromverbrauch', palette='Blues')
+ax.set_title('kWh by Month')
+plt.show()
+
+df.columns #Überschriften auslesen um die FEATURES danch zu orientieren
+
+train = create_features(train)
+test = create_features(test)
+
+FEATURES = ['dayofyear', 'hour', 'dayofweek', 'quarter', 'month', 'year']
+TARGET = 'stromverbrauch'
+
+#Datenset erstellen von Features für Train und Test
+X_train = train[FEATURES]
+y_train = train[TARGET]
+
+X_test = test[FEATURES]
+y_test = test[TARGET]
+
+
+#Define xgb
+reg = xgb.XGBRegressor(base_score=0.5, booster='gbtree',    
+                       n_estimators=1000,
+                       early_stopping_rounds=50,
+                       objective='reg:linear',
+                       max_depth=300,
+                       learning_rate=0.01)
+reg.fit(X_train, y_train,
+        eval_set=[(X_train, y_train), (X_test, y_test)],
+        verbose=100)
+
+# estimators= Wie viele Bäume der Algorythmus erstellt ; Verbose auf True ist auch möglich Kontrolle alle 100 Entsch.Bäume
+#Fehlermeldung wenn Datenlücken sprich Spalte leer
+
+
+#Wie oft wurden die Features zum lernen benutzt
+reg.feature_importances_
+
+#Featurenutzung als Graphik
+fi = pd.DataFrame(data=reg.feature_importances_,
+             index=reg.feature_names_in_,
+             columns=['importance'])
+fi.sort_values('importance').plot(kind='barh', title='Feature Importance') # Nach wichtigkeit sortiert , gibt Wichtigkeit
+# gibt Wichtigkeit in der Summe
+plt.show()
+
+#Neue Spalte erstellen zum Speichern der Prediction
+test['prediction'] = reg.predict(X_test)
+df = df.merge(test[['prediction']], how='left', left_index=True, right_index=True)
+
+
+#Prediction plotten
+ax = df[['stromverbrauch']].plot(figsize=(15, 5))
+df['prediction'].plot(ax=ax, style='.')
+plt.legend(['Truth Data', 'Predictions'])
+
+#Raw Data und Prediction Plotten
+
+ax.set_title('Raw Dat and Prediction')
+plt.show()
+
+#Einen bestimmten Zeitraum veranschaulichen Prediction und Raw Data in einem Diagramm
+df.loc[(df.index >='01-01-2022')&(df.index < '01-08-2022')]['stromverbrauch']\
+.plot(figsize=(15,5),title='Wochendaten')
+df.loc[(df.index>='01-01-2022')&(df.index <'01-08-2022')]['prediction']\
+.plot(style='.')
+plt.legend(['Truth Data','prediction'])
+plt.show()
+
+
+#Metrischer Durchlauf geht nicht Fehler float RMSE; dt.: Wurzel der mittleren Fehlerquadratsumme
+score= np.sqrt(mean_squared_error(test['stromverbrauch'], test['prediction']))
+print(f'RMSE Score on Test set: {score:0.2f}')
+
+# Calculate Error
+np.abs(test[TARGET]-test['prediction'])
+
+test['error']=np.abs(test[TARGET] -test['prediction']) #Vorzeichen egal da abs
+test['date'] = test.index.date
+
+#Schlechteste Prognosen
+test.groupby(['date'])['error'].mean().sort_values(ascending=False).head(10) 
+
+#beste Prognosen
+test.groupby(['date'])['error'].mean().sort_values(ascending=True).head(10) 
+
+#Mittelwert für Tagesfehler
+test.groupby('date')['error'].mean()
